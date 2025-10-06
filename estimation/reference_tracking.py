@@ -160,6 +160,8 @@ def est_by_reference(img_list, water_mask_list, out_dir, record_dir, test_name):
     viz_dir = os.path.join(out_dir, 'viz')
     os.makedirs(viz_dir, exist_ok=True)
 
+    last_good_bbox = None  # todo - store last good bbox for recovery
+
     for i in trange(len(img_list)):
 
         img = cv2.imread(img_list[i])
@@ -173,6 +175,7 @@ def est_by_reference(img_list, water_mask_list, out_dir, record_dir, test_name):
 
         if ref_bbox is None:
             ref_bbox, tracker = get_video_ref(img, ref_bbox_path, tracker_num, enable_tracker)
+            last_good_bbox = copy.deepcopy(ref_bbox)  # todo
             waterlevel_list = [[0 for _ in range(tracker_num)]]
 
         img_name = os.path.basename(img_list[i])[:-4]
@@ -184,8 +187,14 @@ def est_by_reference(img_list, water_mask_list, out_dir, record_dir, test_name):
             tracker_flags, bbox = tracker.update(img)
             if tracker_flags:
                 ref_bbox = bbox
+                last_good_bbox = copy.deepcopy(ref_bbox)  # todo
             else:
                 warnings.warn(f'Tracker failed at frame {img_name}.')
+                ref_bbox = copy.deepcopy(last_good_bbox)  # todo
+                # reinitialize tracker so it doesn't stay lost
+                tracker = cv2.MultiTracker_create()  # todo
+                for t in range(tracker_num):  # todo
+                    tracker.add(cv2.TrackerCSRT_create(), img, tuple(ref_bbox[t]))  # todo
 
         waterlevel_est = copy.deepcopy(waterlevel_list[-1])
         for t in range(tracker_num):
@@ -194,16 +203,70 @@ def est_by_reference(img_list, water_mask_list, out_dir, record_dir, test_name):
 
             key_pt = (int(x + w / 2), int(y + h))
 
-            for y in range(key_pt[1] + 1, water_mask.shape[0]):
-                if water_mask[y][key_pt[0]] == water_label_id:
-                    waterlevel_est[t] = y - key_pt[1]
-                    if waterlevel_est[t] == 1:
-                        waterlevel_est[t] = np.NaN
-                    else:
-                        cv2.line(viz_img, key_pt, (key_pt[0], y), (0, 0, 200), 2)
-                    break
+            # TODO - search downward only
+            # for y in range(key_pt[1] + 1, water_mask.shape[0]):
+            #     if water_mask[y][key_pt[0]] == water_label_id:
+            #         waterlevel_est[t] = y - key_pt[1]
+            #         if waterlevel_est[t] == 1:
+            #             waterlevel_est[t] = np.NaN
+            #         else:
+            #             cv2.line(viz_img, key_pt, (key_pt[0], y), (0, 0, 200), 2)
+            #         break
+            # TODO - search downward only
 
-        waterlevel_list.append(waterlevel_est)
+            # TODO - measure the distance between the object and the water boundary
+            def signed_vertical_distance_to_boundary(key_pt, mask):
+                """
+                Compute signed vertical distance from a point to the nearest boundary
+                (transition between water and non-water) in the mask.
+
+                Parameters:
+                    key_pt: (x, y) tuple of integer pixel coordinates
+                    mask: 2D numpy array (binary or labeled)
+
+                Returns:
+                    (distance, boundary_pt)
+                    distance: float (positive = downward, negative = upward)
+                    boundary_pt: (x, y) of the boundary pixel
+                """
+                key_x, key_y = key_pt
+                H = mask.shape[0]
+                center_val = mask[key_y, key_x]
+
+                def search_down():
+                    last_val = center_val
+                    for yy in range(key_y + 1, H):
+                        if mask[yy, key_x] != last_val:  # boundary encountered
+                            return float(yy - key_y), (key_x, yy)
+                    return None, None
+
+                def search_up():
+                    last_val = center_val
+                    for yy in range(key_y - 1, -1, -1):
+                        if mask[yy, key_x] != last_val:  # boundary encountered
+                            return float(yy - key_y), (key_x, yy)
+                    return None, None
+
+                down_dist, down_pt = search_down()
+                up_dist, up_pt = search_up()
+
+                if up_dist is None and down_dist is None:
+                    return np.nan, None
+                if up_dist is None:
+                    return down_dist, down_pt
+                if down_dist is None:
+                    return up_dist, up_pt
+                # return up_dist if abs(up_dist) <= abs(down_dist) else down_dist
+                return (up_dist, up_pt) if abs(up_dist) <= abs(down_dist) else (down_dist, down_pt)
+
+            waterlevel_est, boundary_pt = signed_vertical_distance_to_boundary(key_pt, water_mask)
+
+            if boundary_pt is not None:
+                # Draw line from object bottom-center to boundary
+                cv2.line(viz_img, key_pt, boundary_pt, (0, 0, 200), 2)
+            # TODO - measure the distance between the object and the water boundary
+
+        waterlevel_list.append([waterlevel_est])
         cv2.imwrite(os.path.join(viz_dir, f'{img_name}.png'), viz_img)
 
     waterlevel_px = np.array(waterlevel_list[1:])
@@ -234,6 +297,6 @@ def est_by_reference(img_list, water_mask_list, out_dir, record_dir, test_name):
     plt.setp(ax.get_yticklabels(), fontsize=fontsize)
     # ax.legend(loc='lower right', fontsize=fontsize)
 
-    waterlevel_path = os.path.join(out_dir, 'waterlevel_px.png')
-    fig.tight_layout()
-    fig.savefig(waterlevel_path, dpi=300)
+    # waterlevel_path = os.path.join(out_dir, 'waterlevel_px.png')
+    # fig.tight_layout()
+    # fig.savefig(waterlevel_path, dpi=300)

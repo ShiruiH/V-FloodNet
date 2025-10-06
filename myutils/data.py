@@ -13,28 +13,25 @@ from torchvision.transforms import functional as TF
 
 color_palette = [0, 0, 0, 0, 0, 128, 0, 128, 0, 128, 0, 0] + [100, 100, 100] * 252
 
+def postprocessing_pred(pred: np.array, min_area: int = 100) -> np.array:
+    """
+    Keeps all connected water regions larger than a minimum area.
+    :param pred: Binary prediction mask (1 = water, 0 = background)
+    :param min_area: Minimum number of pixels for a water region to be kept
+    :return: Filtered binary mask
+    """
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        pred.astype(np.uint8), connectivity=8
+    )
+    
+    filtered_pred = np.zeros_like(pred, dtype=np.uint8)
 
-def postprocessing_pred(pred: np.array) -> np.array:
+    for label in range(1, num_labels):  # skip background
+        area = stats[label, cv2.CC_STAT_AREA]
+        if area >= min_area:
+            filtered_pred[labels == label] = 1
 
-    label_cnt, labels = cv2.connectedComponentsWithAlgorithm(pred, 8, cv2.CV_32S, cv2.CCL_GRANA)
-    if label_cnt == 2:
-        if labels[0, 0] == pred[0, 0]:
-            pred = labels
-        else:
-            pred = 1 - labels
-    else:
-        max_cnt, max_label = 0, 0
-        for i in range(label_cnt):
-            mask = labels == i
-            if pred[mask][0] == 0:
-                continue
-            cnt = len(mask.nonzero()[0])
-            if cnt > max_cnt:
-                max_cnt = cnt
-                max_label = i
-        pred = labels == max_label
-
-    return pred.astype(np.uint8)
+    return filtered_pred
 
 
 def calc_uncertainty(score):
